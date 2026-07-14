@@ -1,164 +1,141 @@
+import sqlite3
 from datetime import datetime, timedelta
-import random
 import uuid
-
-# =====================================
-# SICFT
-# Sistema Integrado de Control Fronterizo Terrestre
-# =====================================
-
-vehiculos_bloqueados = [
-    "XYZ999",
-    "AA111AA",
-    "BB222BB"
-]
-
-conductores_restringidos = [
-    "11111111-1",
-    "22222222-2"
-]
-
-log_operaciones = []
-
+from init_db import crear_base_de_datos, DB_NAME
 
 def generar_operacion():
     return "SICFT-" + str(uuid.uuid4())[:8].upper()
 
+def validar_patente_formato(patente):
+    return len(patente) >= 6
 
-def validar_patente(patente):
-    if len(patente) < 6:
-        return False
-    return True
+def es_vehiculo_bloqueado(patente):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1 FROM vehiculos_bloqueados WHERE patente = ?", (patente,))
+    resultado = cursor.fetchone()
+    conn.close()
+    return resultado is not None
 
+def consultar_sag_db(documento):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1 FROM conductores_restringidos WHERE documento = ?", (documento,))
+    resultado = cursor.fetchone()
+    conn.close()
+    return resultado is None
 
-def consultar_sag(documento):
-    if documento in conductores_restringidos:
-        return False
-    return True
-
-
-def registrar_log(operacion, estado):
+def registrar_log_db(operacion, patente, documento, estado):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
     fecha = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    cursor.execute(
+        "INSERT INTO log_operaciones VALUES (?, ?, ?, ?, ?)",
+        (operacion, fecha, patente, documento, estado)
+    )
+    conn.commit()
+    conn.close()
 
-    registro = {
-        "fecha": fecha,
-        "operacion": operacion,
-        "estado": estado
-    }
-
-    log_operaciones.append(registro)
-
+def guardar_permiso_activo_db(id_permiso, patente, documento, f_emision, f_vencimiento):
+    """Guarda el permiso aprobado de forma oficial en la base de datos."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    qr_simulado = f"QR-{id_permiso}-{patente}"
+    cursor.execute(
+        "INSERT INTO permisos_emitidos VALUES (?, ?, ?, ?, ?, ?)",
+        (id_permiso, patente, documento, f_emision, f_vencimiento, qr_simulado)
+    )
+    conn.commit()
+    conn.close()
 
 def registrar_salida_temporal():
-
     print("\n===== REGISTRO DE SALIDA TEMPORAL =====")
+    patente = input("Ingrese patente del vehículo: ").upper().strip()
+    documento = input("Ingrese RUT/Pasaporte conductor: ").strip()
 
-    patente = input("Ingrese patente del vehículo: ").upper()
-    documento = input("Ingrese RUT/Pasaporte conductor: ")
+    print("\nValidando información en Base de Datos...")
 
-    print("\nValidando información...")
-
-    # Validación patente
-    if not validar_patente(patente):
-        print("\nERROR: Patente inválida.")
+    if not validar_patente_formato(patente):
+        print("\nERROR: Patente inválida (mínimo 6 caracteres).")
         return
 
-    # Vehículo bloqueado
-    if patente in vehiculos_bloqueados:
-
+    # Filtro Bloqueo
+    if es_vehiculo_bloqueado(patente):
         operacion = generar_operacion()
-
         print("\n===================================")
-        print("ALERTA ROJA")
-        print("Vehículo con salida pendiente.")
-        print("Operación cancelada.")
+        print("ALERTA ROJA: Vehículo bloqueado.")
         print("===================================")
-
-        registrar_log(operacion, "RECHAZADO")
+        registrar_log_db(operacion, patente, documento, "RECHAZADO")
         return
 
-    # Validación SAG
-    if not consultar_sag(documento):
-
+    # Filtro SAG
+    if not consultar_sag_db(documento):
         operacion = generar_operacion()
-
         print("\n===================================")
-        print("ALERTA SAG")
-        print("Conductor con restricción activa.")
-        print("Operación cancelada.")
+        print("ALERTA SAG: Conductor restringido.")
         print("===================================")
-
-        registrar_log(operacion, "RECHAZADO")
+        registrar_log_db(operacion, patente, documento, "RECHAZADO")
         return
 
-    # Aprobación
+    # Operación Aprobada
     fecha_emision = datetime.now()
     fecha_vencimiento = fecha_emision + timedelta(days=180)
-
     operacion = generar_operacion()
+
+    f_emision_str = fecha_emision.strftime("%d/%m/%Y")
+    f_vencimiento_str = fecha_vencimiento.strftime("%d/%m/%Y")
 
     print("\n===================================")
     print("OPERACIÓN APROBADA")
     print("===================================")
+    print(f"N° Permiso: {operacion}")
+    print(f"Fecha Vencimiento: {f_vencimiento_str}")
 
-    print(f"N° Operación: {operacion}")
-    print(f"Patente: {patente}")
-    print(f"Documento: {documento}")
-
-    print(
-        "Fecha emisión:",
-        fecha_emision.strftime("%d/%m/%Y")
-    )
-
-    print(
-        "Fecha vencimiento:",
-        fecha_vencimiento.strftime("%d/%m/%Y")
-    )
-
-    print("Vigencia: 180 días")
-    print("Código QR: [SIMULADO]")
-
-    registrar_log(operacion, "APROBADO")
+    # Guardamos en AMBAS tablas
+    registrar_log_db(operacion, patente, documento, "APROBADO")
+    guardar_permiso_activo_db(operacion, patente, documento, f_emision_str, f_vencimiento_str)
 
 
-def ver_logs():
+def menu_historial():
+    """Submenú para decidir qué datos de la base de datos queremos revisar."""
+    print("\n--- CONSULTA DE BASE DE DATOS ---")
+    print("1. Ver Permisos Oficiales Emitidos (Solo Aprobados)")
+    print("2. Ver Historial Completo de Auditoría (Logs)")
+    opc = input("Seleccione: ")
 
-    print("\n===== HISTORIAL DE OPERACIONES =====")
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
 
-    if len(log_operaciones) == 0:
-        print("No existen registros.")
-        return
-
-    for registro in log_operaciones:
-        print("--------------------------------")
-        print("Fecha:", registro["fecha"])
-        print("Operación:", registro["operacion"])
-        print("Estado:", registro["estado"])
-
+    if opc == "1":
+        cursor.execute("SELECT id_permiso, patente, documento_conductor, fecha_vencimiento FROM permisos_emitidos")
+        registros = cursor.fetchall()
+        print("\n===== PERMISOS DE SALIDA ACTIVOS =====")
+        for reg in registros:
+            print(f"Permiso: {reg[0]} | Patente: {reg[1]} | Conductor: {reg[2]} | Vence: {reg[3]}")
+            
+    elif opc == "2":
+        cursor.execute("SELECT operacion, fecha, patente, estado FROM log_operaciones ORDER BY fecha DESC")
+        registros = cursor.fetchall()
+        print("\n===== LOGS DE AUDITORÍA CENTRAL =====")
+        for reg in registros:
+            print(f"[{reg[1]}] Op: {reg[0]} | Patente: {reg[1]} | Estado: {reg[3]}")
+    else:
+        print("Opción inválida.")
+        
+    conn.close()
 
 def modo_offline():
-
     print("\n===== MODO OFFLINE =====")
-    print("Sin conexión al servidor central.")
-    print("Operación local habilitada.")
-    print("Sincronización pendiente: 3 registros.")
-    print("Los datos serán enviados cuando")
-    print("la conexión sea restablecida.")
-
+    print("Operación local habilitada utilizando la base de datos SQLite.")
 
 def menu():
-
+    crear_base_de_datos()
     while True:
-
-        print("\n")
+        print("\n===================================")
+        print(" SICFT - Control Fronterizo Terrestre")
         print("===================================")
-        print(" SICFT")
-        print(" Sistema Integrado de Control")
-        print(" Fronterizo Terrestre")
-        print("===================================")
-
         print("1. Registrar salida temporal")
-        print("2. Ver historial")
+        print("2. Ver base de datos / Historial")
         print("3. Modo offline")
         print("4. Salir")
 
@@ -166,20 +143,13 @@ def menu():
 
         if opcion == "1":
             registrar_salida_temporal()
-
         elif opcion == "2":
-            ver_logs()
-
+            menu_historial()
         elif opcion == "3":
             modo_offline()
-
         elif opcion == "4":
             print("\nSistema finalizado.")
             break
 
-        else:
-            print("\nOpción inválida.")
-
-
-# Inicio del sistema
-menu()
+if __name__ == "__main__":
+    menu()
